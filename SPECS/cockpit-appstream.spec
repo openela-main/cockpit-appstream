@@ -28,7 +28,7 @@
 # we maintain the basic/optional split, then it can be replaced with just %{version}.
 %define required_base 266
 
-%define machines_version 298
+%define machines_version 308
 
 # we generally want CentOS packages to be like RHEL; special cases need to check %{centos} explicitly
 %if 0%{?centos}
@@ -51,18 +51,10 @@ Summary:        Web Console for Linux servers
 License:        LGPL-2.1-or-later
 URL:            https://cockpit-project.org/
 
-Version:        300.1
-Release:        1%{?dist}
+Version:        310.3
+Release:        2%{?dist}
 Source0:        https://github.com/cockpit-project/cockpit/releases/download/%{version}/cockpit-%{version}.tar.xz
 Source1:        https://github.com/cockpit-project/cockpit-machines/releases/download/%{machines_version}/cockpit-machines-%{machines_version}.tar.xz
-
-%if 0%{?fedora} >= 38 || 0%{?rhel} >= 9
-%define cockpit_enable_python 1
-%endif
-
-%if !%{defined cockpit_enable_python}
-%define cockpit_enable_python 0
-%endif
 
 # in RHEL 8 the source package is duplicated: cockpit (building basic packages like cockpit-{bridge,system})
 # and cockpit-appstream (building optional packages like cockpit-{pcp})
@@ -92,6 +84,14 @@ Source1:        https://github.com/cockpit-project/cockpit-machines/releases/dow
 %define disallow_root 1
 %endif
 
+# pcp stopped building on ix86
+%define build_pcp 1
+%if 0%{?fedora} >= 40 || 0%{?rhel} >= 10
+%ifarch %ix86
+%define build_pcp 0
+%endif
+%endif
+
 # Ship custom SELinux policy (but not for cockpit-appstream)
 %if "%{name}" == "cockpit"
 %define selinuxtype targeted
@@ -106,7 +106,7 @@ BuildRequires: pam-devel
 
 BuildRequires: autoconf automake
 BuildRequires: make
-BuildRequires: /usr/bin/python3
+BuildRequires: python3-devel
 %if 0%{?rhel} && 0%{?rhel} <= 8
 # RHEL 8's gettext does not yet have metainfo.its
 BuildRequires: gettext >= 0.19.7
@@ -130,15 +130,19 @@ BuildRequires: glib2-devel >= 2.50.0
 BuildRequires: systemd-devel >= 235
 %if 0%{?suse_version}
 BuildRequires: distribution-release
+%if %{build_pcp}
 BuildRequires: libpcp-devel
 BuildRequires: pcp-devel
 BuildRequires: libpcp3
 BuildRequires: libpcp_import1
+%endif
 BuildRequires: openssh
 BuildRequires: distribution-logos
 BuildRequires: wallpaper-branding
 %else
+%if %{build_pcp}
 BuildRequires: pcp-libs-devel
+%endif
 BuildRequires: openssh-clients
 BuildRequires: docbook-style-xsl
 %endif
@@ -173,20 +177,6 @@ Suggests: cockpit-selinux
 Requires: subscription-manager-cockpit
 %endif
 
-%if %{cockpit_enable_python}
-BuildRequires:  python3-devel
-BuildRequires:  python3-pip
-%if 0%{?rhel} == 0
-# All of these are only required for running pytest (which we only do on Fedora)
-BuildRequires:  procps-ng
-BuildRequires:  pyproject-rpm-macros
-BuildRequires:  python3-pytest-asyncio
-BuildRequires:  python3-pytest-cov
-BuildRequires:  python3-pytest-timeout
-BuildRequires:  python3-tox-current-env
-%endif
-%endif
-
 %prep
 %setup -q -T -a 1 -c -n cockpit-machines-%{machines_version}
 %setup -q -n cockpit-%{version}
@@ -200,21 +190,17 @@ BuildRequires:  python3-tox-current-env
     --docdir=%_defaultdocdir/%{name} \
 %endif
     --with-pamdir='%{pamdir}' \
-%if %{cockpit_enable_python}
-    --enable-pybridge \
-%endif
 %if 0%{?build_basic} == 0
     --disable-ssh \
+%endif
+%if %{build_pcp} == 0
+    --disable-pcp \
 %endif
 
 %make_build
 
 %check
 make -j$(nproc) check
-
-%if %{cockpit_enable_python} && 0%{?rhel} == 0
-%tox
-%endif
 
 %install
 %make_install
@@ -232,12 +218,16 @@ echo '%dir %{_datadir}/cockpit/base1' >> base.list
 find %{buildroot}%{_datadir}/cockpit/base1 -type f -o -type l >> base.list
 echo '%{_sysconfdir}/cockpit/machines.d' >> base.list
 echo %{buildroot}%{_datadir}/polkit-1/actions/org.cockpit-project.cockpit-bridge.policy >> base.list
+%if 0%{?build_basic}
 echo '%dir %{_datadir}/cockpit/ssh' >> base.list
 find %{buildroot}%{_datadir}/cockpit/ssh -type f >> base.list
+%endif
 echo '%{_libexecdir}/cockpit-ssh' >> base.list
 
+%if %{build_pcp}
 echo '%dir %{_datadir}/cockpit/pcp' > pcp.list
 find %{buildroot}%{_datadir}/cockpit/pcp -type f >> pcp.list
+%endif
 
 echo '%dir %{_datadir}/cockpit/shell' >> system.list
 find %{buildroot}%{_datadir}/cockpit/shell -type f >> system.list
@@ -284,7 +274,7 @@ find %{buildroot}%{_datadir}/cockpit/static -type f >> static.list
 
 # when not building basic packages, remove their files
 %if 0%{?build_basic} == 0
-for pkg in base1 branding motd kdump networkmanager selinux shell sosreport ssh static systemd users metrics; do
+for pkg in base1 branding motd kdump networkmanager selinux shell sosreport static systemd users metrics; do
     rm -r %{buildroot}/%{_datadir}/cockpit/$pkg
     rm -f %{buildroot}/%{_datadir}/metainfo/org.cockpit-project.cockpit-${pkg}.metainfo.xml
 done
@@ -293,7 +283,7 @@ for data in doc man pixmaps polkit-1; do
 done
 rm -r %{buildroot}/%{_prefix}/%{__lib}/tmpfiles.d
 find %{buildroot}/%{_unitdir}/ -type f ! -name 'cockpit-session*' -delete
-for libexec in cockpit-askpass cockpit-beiboot cockpit-session cockpit-ws cockpit-tls cockpit-wsinstance-factory cockpit-client cockpit-client.ui cockpit-desktop cockpit-certificate-helper cockpit-certificate-ensure; do
+for libexec in cockpit-askpass cockpit-session cockpit-ws cockpit-tls cockpit-wsinstance-factory cockpit-client cockpit-client.ui cockpit-desktop cockpit-certificate-helper cockpit-certificate-ensure; do
     rm -f %{buildroot}/%{_libexecdir}/$libexec
 done
 rm -r %{buildroot}/%{_sysconfdir}/pam.d %{buildroot}/%{_sysconfdir}/motd.d %{buildroot}/%{_sysconfdir}/issue.d
@@ -382,10 +372,6 @@ system on behalf of the web based user interface.
 %doc %{_mandir}/man1/cockpit-bridge.1.gz
 %{_bindir}/cockpit-bridge
 %{_libexecdir}/cockpit-askpass
-%if %{cockpit_enable_python}
-%{python3_sitelib}/%{name}*
-%{_libexecdir}/cockpit-beiboot
-%endif
 
 %package doc
 Summary: Cockpit deployment and developer guide
@@ -434,35 +420,39 @@ Provides: cockpit-sosreport = %{version}-%{release}
 Recommends: (reportd if abrt)
 %endif
 
-Provides: bundled(npm(@patternfly/patternfly)) = 5.0.2
-Provides: bundled(npm(@patternfly/react-core)) = 5.0.0
-Provides: bundled(npm(@patternfly/react-icons)) = 5.0.0
-Provides: bundled(npm(@patternfly/react-styles)) = 5.0.0
-Provides: bundled(npm(@patternfly/react-table)) = 5.0.0
-Provides: bundled(npm(@patternfly/react-tokens)) = 5.0.0
+Provides: bundled(npm(@patternfly/patternfly)) = 5.1.0
+Provides: bundled(npm(@patternfly/react-core)) = 5.1.2
+Provides: bundled(npm(@patternfly/react-icons)) = 5.1.2
+Provides: bundled(npm(@patternfly/react-styles)) = 5.1.2
+Provides: bundled(npm(@patternfly/react-table)) = 5.1.2
+Provides: bundled(npm(@patternfly/react-tokens)) = 5.1.2
 Provides: bundled(npm(argparse)) = 1.0.10
+Provides: bundled(npm(array-buffer-byte-length)) = 1.0.0
 Provides: bundled(npm(attr-accept)) = 2.2.2
 Provides: bundled(npm(autolinker)) = 3.16.2
 Provides: bundled(npm(available-typed-arrays)) = 1.0.5
-Provides: bundled(npm(call-bind)) = 1.0.2
-Provides: bundled(npm(deep-equal)) = 2.0.5
-Provides: bundled(npm(define-properties)) = 1.2.0
+Provides: bundled(npm(call-bind)) = 1.0.5
+Provides: bundled(npm(date-fns)) = 3.2.0
+Provides: bundled(npm(deep-equal)) = 2.2.3
+Provides: bundled(npm(define-data-property)) = 1.1.1
+Provides: bundled(npm(define-properties)) = 1.2.1
 Provides: bundled(npm(es-get-iterator)) = 1.1.3
 Provides: bundled(npm(file-selector)) = 0.6.0
-Provides: bundled(npm(focus-trap)) = 7.4.3
+Provides: bundled(npm(focus-trap)) = 7.5.2
 Provides: bundled(npm(for-each)) = 0.3.3
-Provides: bundled(npm(function-bind)) = 1.1.1
+Provides: bundled(npm(function-bind)) = 1.1.2
 Provides: bundled(npm(functions-have-names)) = 1.2.3
-Provides: bundled(npm(get-intrinsic)) = 1.2.1
+Provides: bundled(npm(get-intrinsic)) = 1.2.2
 Provides: bundled(npm(gopd)) = 1.0.1
 Provides: bundled(npm(has-bigints)) = 1.0.2
-Provides: bundled(npm(has-property-descriptors)) = 1.0.0
+Provides: bundled(npm(has-property-descriptors)) = 1.0.1
 Provides: bundled(npm(has-proto)) = 1.0.1
 Provides: bundled(npm(has-symbols)) = 1.0.3
 Provides: bundled(npm(has-tostringtag)) = 1.0.0
-Provides: bundled(npm(has)) = 1.0.3
-Provides: bundled(npm(internal-slot)) = 1.0.5
+Provides: bundled(npm(hasown)) = 2.0.0
+Provides: bundled(npm(internal-slot)) = 1.0.6
 Provides: bundled(npm(is-arguments)) = 1.1.1
+Provides: bundled(npm(is-array-buffer)) = 3.0.2
 Provides: bundled(npm(is-bigint)) = 1.0.4
 Provides: bundled(npm(is-boolean-object)) = 1.1.2
 Provides: bundled(npm(is-callable)) = 1.2.7
@@ -471,42 +461,46 @@ Provides: bundled(npm(is-map)) = 2.0.2
 Provides: bundled(npm(is-number-object)) = 1.0.7
 Provides: bundled(npm(is-regex)) = 1.1.4
 Provides: bundled(npm(is-set)) = 2.0.2
+Provides: bundled(npm(is-shared-array-buffer)) = 1.0.2
 Provides: bundled(npm(is-string)) = 1.0.7
 Provides: bundled(npm(is-symbol)) = 1.0.4
+Provides: bundled(npm(is-typed-array)) = 1.1.12
 Provides: bundled(npm(is-weakmap)) = 2.0.1
 Provides: bundled(npm(is-weakset)) = 2.0.2
 Provides: bundled(npm(isarray)) = 2.0.5
 Provides: bundled(npm(js-sha1)) = 0.6.0
-Provides: bundled(npm(js-sha256)) = 0.9.0
+Provides: bundled(npm(js-sha256)) = 0.10.1
 Provides: bundled(npm(js-tokens)) = 4.0.0
 Provides: bundled(npm(json-stable-stringify-without-jsonify)) = 1.0.1
 Provides: bundled(npm(lodash)) = 4.17.21
 Provides: bundled(npm(loose-envify)) = 1.4.0
 Provides: bundled(npm(object-assign)) = 4.1.1
-Provides: bundled(npm(object-inspect)) = 1.12.3
+Provides: bundled(npm(object-inspect)) = 1.13.1
 Provides: bundled(npm(object-is)) = 1.1.5
 Provides: bundled(npm(object-keys)) = 1.1.1
-Provides: bundled(npm(object.assign)) = 4.1.4
+Provides: bundled(npm(object.assign)) = 4.1.5
 Provides: bundled(npm(prop-types)) = 15.8.1
 Provides: bundled(npm(react-dom)) = 18.2.0
 Provides: bundled(npm(react-dropzone)) = 14.2.3
 Provides: bundled(npm(react-is)) = 16.13.1
 Provides: bundled(npm(react)) = 18.2.0
-Provides: bundled(npm(regexp.prototype.flags)) = 1.5.0
+Provides: bundled(npm(regexp.prototype.flags)) = 1.5.1
 Provides: bundled(npm(remarkable)) = 2.0.1
 Provides: bundled(npm(scheduler)) = 0.23.0
+Provides: bundled(npm(set-function-length)) = 1.2.0
+Provides: bundled(npm(set-function-name)) = 2.0.1
 Provides: bundled(npm(side-channel)) = 1.0.4
 Provides: bundled(npm(sprintf-js)) = 1.0.3
 Provides: bundled(npm(stop-iteration-iterator)) = 1.0.0
 Provides: bundled(npm(tabbable)) = 6.2.0
-Provides: bundled(npm(throttle-debounce)) = 2.3.0
+Provides: bundled(npm(throttle-debounce)) = 5.0.0
 Provides: bundled(npm(tslib)) = 2.6.2
-Provides: bundled(npm(uuid)) = 7.0.3
+Provides: bundled(npm(uuid)) = 9.0.1
 Provides: bundled(npm(which-boxed-primitive)) = 1.0.2
 Provides: bundled(npm(which-collection)) = 1.0.1
-Provides: bundled(npm(which-typed-array)) = 1.1.11
-Provides: bundled(npm(xterm-addon-canvas)) = 0.3.0
-Provides: bundled(npm(xterm)) = 5.1.0
+Provides: bundled(npm(which-typed-array)) = 1.1.13
+Provides: bundled(npm(xterm-addon-canvas)) = 0.5.0
+Provides: bundled(npm(xterm)) = 5.3.0
 
 %description system
 This package contains the Cockpit shell and system configuration interfaces.
@@ -524,7 +518,7 @@ Requires(post): (policycoreutils if selinux-policy-%{selinuxtype})
 Conflicts: firewalld < 0.6.0-1
 Recommends: sscg >= 2.3
 Recommends: system-logos
-Suggests: sssd-dbus
+Suggests: sssd-dbus >= 2.6.2
 # for cockpit-desktop
 Suggests: python3
 
@@ -723,6 +717,9 @@ Requires: cockpit-shell >= %{required_base}
 Requires: udisks2 >= 2.9
 Recommends: udisks2-lvm2 >= 2.9
 Recommends: udisks2-iscsi >= 2.9
+%if ! 0%{?rhel}
+Recommends: udisks2-btrfs >= 2.9
+%endif
 Recommends: device-mapper-multipath
 Recommends: clevis-luks
 Requires: %{__python3}
@@ -737,7 +734,6 @@ BuildArch: noarch
 The Cockpit component for managing storage.  This package uses udisks.
 
 %files -n cockpit-storaged -f storaged.list
-%dir %{_datadir}/cockpit/storaged/images
 %{_datadir}/metainfo/org.cockpit-project.cockpit-storaged.metainfo.xml
 
 %package -n cockpit-tests
@@ -784,6 +780,8 @@ If "virt-install" is installed, you can also create new virtual machines.
 %files -n cockpit-machines -f machines.list
 %{_datadir}/metainfo/org.cockpit-project.machines.metainfo.xml
 
+%if %{build_pcp}
+
 %package -n cockpit-pcp
 Summary: Cockpit PCP integration
 Requires: cockpit-bridge >= %{required_base}
@@ -798,6 +796,8 @@ Cockpit support for reading PCP metrics and loading PCP archives.
 
 %post -n cockpit-pcp
 systemctl reload-or-try-restart pmlogger
+
+%endif
 
 %package -n cockpit-packagekit
 Summary: Cockpit user interface for packages
@@ -819,8 +819,45 @@ via PackageKit.
 
 # The changelog is automatically generated and merged
 %changelog
-* Thu Sep 07 2023 Martin Pitt <mpitt@redhat.com> - 300.1-1
-- Translation updates (rhbz#2189559)
+* Tue Feb 20 2024 Martin Pitt <mpitt@redhat.com> - 310.3-2
+- Machines: Mass SPICE replacement
+- Machines: Pre-formatted Block Device storage pool support
+- Machines: Translation updates (jira#RHEL-14230)
+
+* Thu Feb 15 2024 Martin Pitt <mpitt@redhat.com> - 310.3-1
+- Translation updates (jira#RHEL-16681)
+  Lots of bug fixes
+
+* Wed Jan 31 2024 Martin Pitt <mpitt@redhat.com> - 310-1
+- Storage: support for btrfs
+- Storage: improved support for swap
+- Machines: Action to Replace SPICE devices (RHEL-17433)
+- Machines: Create external snapshots when supported
+- Machines: Fix VM creation on s390x (RHEL-22241)
+
+* Thu Jan 18 2024 Martin Pitt <mpitt@redhat.com> - 309-1
+- Machines: Fix deletion of SSH keys (jira#RHEL-19598)
+
+* Fri Dec 15 2023 Martin Pitt <mpitt@redhat.com> - 307-1
+- Storage redesign
+- Machines: Stop configuring SPICE by default for new VMs (jira#RHEL-18058)
+
+* Wed Nov 29 2023 Martin Pitt <mpitt@redhat.com> - 306-1
+- Machines: Change "Add disk" default behavior
+
+* Thu Nov 23 2023 Martin Pitt <mpitt@redhat.com> - 305-1
+- Performance and stability improvements
+
+* Wed Nov 01 2023 Martin Pitt <mpitt@redhat.com> - 304-1
+- Storage: Support for RAID layouts with LVM2
+
+* Thu Oct 19 2023 Martin Pitt <mpitt@redhat.com> - 303-1
+- Apps: Warn if appstream data package is missing
+- Storage: Partitions can be resized
+
+* Wed Sep 20 2023 Martin Pitt <mpitt@redhat.com> - 301-1
+- WireGuard support
+- Metrics: link to network interface details
 
 * Wed Sep 06 2023 Martin Pitt <mpitt@redhat.com> - 300-1
 - Celebrating the Nürnberg life release!
