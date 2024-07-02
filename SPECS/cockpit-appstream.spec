@@ -28,7 +28,7 @@
 # we maintain the basic/optional split, then it can be replaced with just %{version}.
 %define required_base 266
 
-%define machines_version 308
+%define machines_version 308.3
 
 # we generally want CentOS packages to be like RHEL; special cases need to check %{centos} explicitly
 %if 0%{?centos}
@@ -52,7 +52,7 @@ License:        LGPL-2.1-or-later
 URL:            https://cockpit-project.org/
 
 Version:        310.3
-Release:        2%{?dist}
+Release:        3%{?dist}
 Source0:        https://github.com/cockpit-project/cockpit/releases/download/%{version}/cockpit-%{version}.tar.xz
 Source1:        https://github.com/cockpit-project/cockpit-machines/releases/download/%{machines_version}/cockpit-machines-%{machines_version}.tar.xz
 
@@ -819,6 +819,9 @@ via PackageKit.
 
 # The changelog is automatically generated and merged
 %changelog
+* Thu May 02 2024 Martin Pitt <mpitt@redhat.com> - 310.3-3
+- Machines: Fix detaching host devices for running VMs (RHEL-34694)
+
 * Tue Feb 20 2024 Martin Pitt <mpitt@redhat.com> - 310.3-2
 - Machines: Mass SPICE replacement
 - Machines: Pre-formatted Block Device storage pool support
